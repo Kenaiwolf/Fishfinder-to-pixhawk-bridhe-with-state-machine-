@@ -544,7 +544,7 @@ static void readNMEA(){
 // PARITY tag=HANDLE_NMEA_B toklen=1533 braces={15,15} parens={49,49} semi=42 edges={staticvo,Idx=0;}}}
 // === SEC:MAVLINK_AND_COMMANDS BEGIN ===
 #define HB_LED_PIN 13
-#if DEBUG_CMD_ECHO
+#if DEBUG_LINK
 static void dbgCmd(const char* fmt,int val){
     char dbg[24];
     snprintf(dbg,sizeof(dbg),fmt,val);
@@ -568,7 +568,7 @@ static void sendHeartbeat(){
 static bool sendSetMode(uint8_t mode){
     mavlink_msg_set_mode_pack(SYS_ID,COMP_ID,&mavMsgTx,TARGET_SYS,MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,(uint32_t)mode);
     if(!mavSend())return false;
-#if DEBUG_CMD_ECHO
+#if DEBUG_LINK
     dbgCmd("CMD SET_MODE=%u",mode);
 #endif
     return true;
@@ -631,7 +631,7 @@ static void sendVelocityTarget(float headingDeg,float speed_ms){
 static bool sendSpeedCommand(float speed_ms){
     mavlink_msg_command_long_pack(SYS_ID,COMP_ID,&mavMsgTx,TARGET_SYS,TARGET_COMP,MAV_CMD_DO_CHANGE_SPEED,0,1,speed_ms,-1,0,0,0,0);
     if(!mavSend())return false;
-#if DEBUG_CMD_ECHO
+#if DEBUG_LINK
     dbgCmd("CMD SPEED=%d cm/s",(int)(speed_ms*100.0f));
 #endif
     return true;
@@ -639,7 +639,7 @@ static bool sendSpeedCommand(float speed_ms){
 static bool sendDisarm(){
     mavlink_msg_command_long_pack(SYS_ID,COMP_ID,&mavMsgTx,TARGET_SYS,TARGET_COMP,MAV_CMD_COMPONENT_ARM_DISARM,0,0,0,0,0,0,0,0);
     if(!mavSend())return false;
-#if DEBUG_CMD_ECHO
+#if DEBUG_LINK
     sendStatusText_P(MAV_SEVERITY_DEBUG,PSTR("CMD DISARM"));
 #endif
     return true;
@@ -947,7 +947,7 @@ void loop(){
     if(now-lastHeartbeat>=HB_INTERVAL_MS){
         sendHeartbeat();
         lastHeartbeat=now;
-#if DEBUG_CMD_ECHO
+#if DEBUG_LINK
         char st[48];
         snprintf(st,sizeof(st),"PM=%u PK=%u SY=%u HB=%u AF=%d",
                  (unsigned)pixhawkMode,(unsigned)pixhawkModeKnown,
