@@ -52,7 +52,7 @@ static float lastSentSpeed=0.0f;
 static bool speedDirty=false;
 static uint32_t speedChangedMs=0;
 #define MAV_BAUD 57600UL
-#define NMEA_BAUD 38400UL //HELIX
+#define NMEA_BAUD 4800UL //598ci HD
 #define TARGET_SYS 1
 #define TARGET_COMP 1
 #define SYS_ID 1
@@ -103,7 +103,7 @@ static uint32_t speedChangedMs=0;
 #define VTG_TIMEOUT_MS 3000UL
 #define DPT_TIMEOUT_MS 3000UL
 // === SEC:GLOBALS_AND_DEFINES_A END ===
-// PARITY tag=GLOBALS_AND_DEFINES_A toklen=1862 braces={0,0} parens={11,11} semi=14 edges={staticui,MS3000UL}
+// PARITY tag=GLOBALS_AND_DEFINES_A toklen=1861 braces={0,0} parens={11,11} semi=14 edges={staticui,MS3000UL}
 // === SEC:GLOBALS_AND_DEFINES_B BEGIN ===
 #define ENABLE_DPT_GLITCH_FILTER 1
 #define DEBUG_RMB_PARSE 0        // line ~405: RMB dC=/arr=/mWP=/trg=/slot=/id= per-sentence dump (GUIDED-state RMB parse)
@@ -111,7 +111,7 @@ static uint32_t speedChangedMs=0;
 #define DEBUG_APPROACH 1         // CIRCLE_APPROACH-phase messages (shares transition lines with GUIDED and SURVEY)
 #define DEBUG_SURVEY 1           // CIRCLE_SURVEY-phase messages (lap-retry, survey-done->follow, shares entry line with APPROACH)
 #define DEBUG_FOLLOW 1           // FOLLOW-phase messages (side-flip, line-lost->re-circle, re-activated)
-#define DEBUG_CONTOUR_TUNING 0   // per-sample noisy XING pe=/ce=/slV=/cnt= and XING acc=/dev=/side= lines (CIRCLE_SURVEY internals only)
+#define DEBUG_CONTOUR_TUNING 1   // per-sample noisy XING pe=/ce=/slV=/cnt= and XING acc=/dev=/side= lines (CIRCLE_SURVEY internals only)
 #define DEBUG_SPEED_TRIM 0       
 #define DEBUG_FREE_RAM 0         
 #define DEBUG_LINK 0             // replaces DEBUG_NMEA_ECHO + DEBUG_CMD_ECHO (RMB raw echo, CMD DISARM echo, etc.)
@@ -142,16 +142,16 @@ static void checkFreeRam(char tag){
 #define DPT_GLITCH_NUM_SAMPLES 3
 #endif
 #define CONTOUR_CIRCLE_RADIUS_M 3.0f
-#define CIRCLE_ARRIVE_DIST_M 1.0f
+#define CONTOUR_MIN_TURN_RADIUS_M 1.0f   // placeholder — replace with boat's actual minimum turn radius at travelSpeed
 #define CONTOUR_CORRECT_DEPTH_M 0.15f
 #define CONTOUR_SAFETY_DEPTH_M 0.8f
 #define CONTOUR_GAIN_DEG_PER_M 80.0f
 #define CONTOUR_MAX_OFFSET_DEG 90.0f
 #define CONTOUR_TREND_DIST_M 4.0f
 #define CONTOUR_FLIP_ABORT_M 0.5f
-#define CONTOUR_LOST_TIMEOUT_MS 30000UL
+#define CONTOUR_LOST_TIMEOUT_MS 50000UL
 #define CONTOUR_FLIP_GATE_MS 3000UL 
-#define CONTOUR_LOST_DIST_M 20.0f
+#define CONTOUR_LOST_DIST_M (CONTOUR_CIRCLE_RADIUS_M*4)
 #define LOITER_RESET_MS 1500UL
 #define DEFAULT_SPEED_MS 3.4f
 #define METERS_PER_DEG_LAT 111111.0f
@@ -194,7 +194,7 @@ static uint32_t lastDPTms=0;
 static int8_t dptGlitchCount=0;
 #endif
 // === SEC:GLOBALS_AND_DEFINES_B END ===
-// PARITY tag=GLOBALS_AND_DEFINES_B toklen=2541 braces={5,5} parens={19,19} semi=33 edges={#defineE,0;#endif}
+// PARITY tag=GLOBALS_AND_DEFINES_B toklen=2546 braces={5,5} parens={19,19} semi=33 edges={#defineE,0;#endif}
 // === SEC:GLOBALS_AND_DEFINES_C BEGIN ===
 static float activationCosLat=1.0f;
 static float contourHeadingDeg=0.0f;
@@ -206,8 +206,6 @@ static float activationHeadingDeg=0.0f;
 static int32_t activationLat_int=0;
 static int32_t activationLon_int=0;
 static bool activationPosValid=false;
-static int32_t circleStartLat_int=0;
-static int32_t circleStartLon_int=0;
 static bool circleCrossFound=false;
 static float circleBestHeading=0.0f;
 static bool circleBestDeepRight=false;
@@ -219,6 +217,20 @@ static float circlePrevTheta=0.0f;
 static int32_t circlePrevLat_int=0;
 static int32_t circlePrevLon_int=0;
 static float circleLastDepth=0.0f;
+// --- CIRCLE_APPROACH 180-deg arc tracking (mirrors circleAccumAngle/circlePrevTheta pattern) ---  
+static float circleApproachAccumAngle=0.0f;  
+static float circleApproachPrevTheta=0.0f;  
+static float circleApproachThetaInit=999.0f;   // sentinel: not yet sampled this approach  
+  
+// --- C' (approach-arc center) storage, set once per CIRCLE_APPROACH entry ---  
+static int32_t approachCenterLat_int=0;  
+static int32_t approachCenterLon_int=0;  
+  
+// --- Pixhawk real yaw heading (from GLOBAL_POSITION_INT.hdg), replaces vtg_cog_deg for anchor-heading use ---  
+static float pixhawkHeadingDeg=0.0f;  
+static bool  havePixhawkHeading=false;  
+  
+// --- Minimum turn radius floor for approach arc ---  
 static bool surveyDptWasValid=false;
 static int16_t depthSlopeBufDepth[DEPTH_SLOPE_SAMPLES]; // 4 int16 = 8 bytes (cm)
 static int16_t depthSlopeBufDist[DEPTH_SLOPE_SAMPLES];  // 4 int16 = 8 bytes (cm)
@@ -281,7 +293,7 @@ static uint32_t pendingLastSendMs=0;
 static bool modeConfirmFailsafe=false;
 static bool holdLatched=false;
 // === SEC:GLOBALS_AND_DEFINES_C END ===
-// PARITY tag=GLOBALS_AND_DEFINES_C toklen=2846 braces={0,0} parens={0,0} semi=82 edges={staticfl,d=false;}
+// PARITY tag=GLOBALS_AND_DEFINES_C toklen=3044 braces={0,0} parens={0,0} semi=87 edges={staticfl,d=false;}
 // === SEC:HELPER_FUNCTIONS BEGIN ===
 static float parseFloat(const char* s){
     if(!s||!*s)return 0.0f;
@@ -529,7 +541,7 @@ static void readNMEA(){
     }
 }
 // === SEC:HANDLE_NMEA_B END ===
-// PARITY tag=HANDLE_NMEA_B toklen=1788 braces={16,16} parens={57,57} semi=48 edges={staticvo,Idx=0;}}}
+// PARITY tag=HANDLE_NMEA_B toklen=1533 braces={15,15} parens={49,49} semi=42 edges={staticvo,Idx=0;}}}
 // === SEC:MAVLINK_AND_COMMANDS BEGIN ===
 #define HB_LED_PIN 13
 #if DEBUG_CMD_ECHO
@@ -650,19 +662,23 @@ static void gotoLoiterReset(uint8_t breadcrumb){
     navState=NavState::LOITER_WP_RESET;
     EEPROM.update(EEPROM_ADDR_BREADCRUMB,breadcrumb);
 }
-static void setCircleAnchor(float lat,int32_t lat_int,int32_t lon_int,float headingDeg){
-#if DEBUG_FREE_RAM
-    checkFreeRam('A');
-#endif
-    EEPROM.update(EEPROM_ADDR_BREADCRUMB,BC_SET_CIRCLE_ANCHOR);
-    activationHeadingDeg=headingDeg;
-    activationLat_int=lat_int;
-    activationCosLat=cosf(lat*(float)M_PI/180.0f);
-    activationLon_int=lon_int;
-    activationPosValid=true;
-    float hr=activationHeadingDeg*(float)M_PI/180.0f;
-    circleStartLat_int=activationLat_int+(int32_t)((-sinf(hr))*CONTOUR_CIRCLE_RADIUS_M*INT7_PER_METER_LAT);
-    circleStartLon_int=activationLon_int+(int32_t)(cosf(hr)*CONTOUR_CIRCLE_RADIUS_M*INT7_PER_METER_LAT/activationCosLat);
+static void setCircleAnchor(float lat,int32_t lat_int,int32_t lon_int,float headingDeg){  
+#if DEBUG_FREE_RAM  
+    checkFreeRam('A');  
+#endif  
+    EEPROM.update(EEPROM_ADDR_BREADCRUMB,BC_SET_CIRCLE_ANCHOR);  
+    activationHeadingDeg=headingDeg;  
+    activationLat_int=lat_int;  
+    activationCosLat=cosf(lat*(float)M_PI/180.0f);  
+    activationLon_int=lon_int;  
+    activationPosValid=true;  
+    float approachHeadingDeg=havePixhawkHeading?pixhawkHeadingDeg:vtg_cog_deg;  
+    float hr=approachHeadingDeg*(float)M_PI/180.0f; 
+    approachCenterLat_int=activationLat_int+(int32_t)((-sinf(hr))*(CONTOUR_CIRCLE_RADIUS_M*0.5f)*INT7_PER_METER_LAT);    
+    approachCenterLon_int=activationLon_int+(int32_t)((cosf(hr))*(CONTOUR_CIRCLE_RADIUS_M*0.5f)*INT7_PER_METER_LAT/activationCosLat);
+    circleApproachAccumAngle=0.0f;  
+    circleApproachPrevTheta=0.0f;  
+    circleApproachThetaInit=999.0f;   // sentinel: "not yet sampled"
     circleCrossFound=false;
     circleBestDev=999.0f;
     circleAccumAngle=0.0f;
@@ -683,7 +699,7 @@ static void setCircleAnchor(float lat,int32_t lat_int,int32_t lon_int,float head
 }
 static void enterContourFollow(){
     EEPROM.update(EEPROM_ADDR_BREADCRUMB,BC_ENTER_CONTOUR_FOLLOW);
-    float entryHeadingDeg=haveLastLegHeading?lastLegHeadingDeg:vtg_cog_deg;
+    float entryHeadingDeg=lastLegHeadingDeg;
     contourHeadingDeg=entryHeadingDeg;
     contourBaseHeadingDeg=entryHeadingDeg;
     contourTargetDepth_m=haveDptEma?dpt_depth_ema_m:dpt_depth_m;  
@@ -726,18 +742,18 @@ static void reenterContourFromLastGood(){
                          contourHeadingDeg);
         activationPosValid=haveCurrentPos;
     }
-    contourPhase=ContourPhase::CIRCLE_APPROACH;
-    sendSpeedCommand(travelSpeed);
-	activeSpeedSlot=0;  		
-#if DEBUG_FOLLOW || DEBUG_APPROACH
-	sendStatusText_P(MAV_SEVERITY_WARNING,PSTR("CONTOUR: line lost -> re-circle"));
-#endif
-#if DEBUG_FOLLOW || DEBUG_APPROACH
-	sendStatusText_P(MAV_SEVERITY_INFO,PSTR("CONTOUR FOLLOW: re-activated"));
-#endif
+    contourPhase=ContourPhase::CIRCLE_SURVEY;  
+    sendSpeedCommand(travelSpeed);  
+	activeSpeedSlot=0;  		  
+#if DEBUG_FOLLOW || DEBUG_APPROACH  
+	sendStatusText_P(MAV_SEVERITY_WARNING,PSTR("CONTOUR: line lost -> re-circle"));  
+#endif  
+#if DEBUG_FOLLOW || DEBUG_APPROACH  
+	sendStatusText_P(MAV_SEVERITY_INFO,PSTR("CONTOUR FOLLOW: re-activated"));  
+#endif  
 }
 // === SEC:CONTOUR_CTRL END ===
-// PARITY tag=CONTOUR_CTRL toklen=2978 braces={6,6} parens={36,36} semi=62 edges={staticvo,;#endif}}
+// PARITY tag=CONTOUR_CTRL toklen=3130 braces={6,6} parens={39,39} semi=66 edges={staticvo,;#endif}}
 // === SEC:SETUP BEGIN ===
 void setup(){
 	wdt_disable();  
@@ -859,14 +875,20 @@ static void readMAVLink(){
                     }
                 }
             }
-            if(mavMsg.msgid==MAVLINK_MSG_ID_GLOBAL_POSITION_INT){
-                mavlink_global_position_int_t gp;
-                mavlink_msg_global_position_int_decode(&mavMsg,&gp);
-                currentLat_int=gp.lat;
-                currentLon_int=gp.lon;
-                currentLat_deg=gp.lat*1e-7f;
-                haveCurrentPos=true;
-            }
+			if(mavMsg.msgid==MAVLINK_MSG_ID_GLOBAL_POSITION_INT){  
+				mavlink_global_position_int_t gp;  
+				mavlink_msg_global_position_int_decode(&mavMsg,&gp);  
+				currentLat_int=gp.lat;  
+				currentLon_int=gp.lon;  
+				currentLat_deg=gp.lat*1e-7f;  
+				haveCurrentPos=true;  
+				if(gp.hdg<=36000){  
+					pixhawkHeadingDeg=gp.hdg*0.01f;  
+					havePixhawkHeading=true;  
+				}else{  
+				havePixhawkHeading=false;  
+				}  
+			}
             if(mavMsg.msgid==MAVLINK_MSG_ID_NAMED_VALUE_FLOAT){
                 mavlink_named_value_float_t nv;
                 mavlink_msg_named_value_float_decode(&mavMsg,&nv);
@@ -881,7 +903,7 @@ static void readMAVLink(){
     }
 }
 // === SEC:READ_MAVLINK END ===
-// PARITY tag=READ_MAVLINK toklen=2927 braces={18,18} parens={60,60} semi=51 edges={staticvo,se;}}}}}}
+// PARITY tag=READ_MAVLINK toklen=3032 braces={20,20} parens={61,61} semi=54 edges={staticvo,se;}}}}}}
 // === SEC:LOOP_TOP BEGIN ===
 void loop(){
     wdt_reset();
@@ -1158,33 +1180,56 @@ void loop(){
 // === SEC:LOOP_CONTOUR_TOP END ===
 // PARITY tag=LOOP_CONTOUR_TOP toklen=1899 braces={14,13} parens={28,28} semi=40 edges={elseif(n,0.0f);}}}
 // === SEC:LOOP_CONTOUR_APPROACH BEGIN ===
-            else if(contourPhase==ContourPhase::CIRCLE_APPROACH){
-                if(haveDPT&&dpt_depth_m<CONTOUR_SAFETY_DEPTH_M){
-					gotoLoiterReset(BC_LOITER_WP_RESET_APPROACH);
-                    sendStatusText_P(MAV_SEVERITY_WARNING,PSTR("CONTOUR: shallow depth -> LOITER (approach)"));
-                }else if(haveCurrentPos&&activationPosValid){
-                    float dN=(currentLat_int-circleStartLat_int)*METERS_PER_INT7_LAT;
-                    float dE=(currentLon_int-circleStartLon_int)*METERS_PER_INT7_LAT*activationCosLat;
-                    if(dN*dN+dE*dE<CIRCLE_ARRIVE_DIST_M*CIRCLE_ARRIVE_DIST_M){
-                        circlePrevLat_int=currentLat_int;
-                        circlePrevLon_int=currentLon_int;
+            else if(contourPhase==ContourPhase::CIRCLE_APPROACH){  
+                if(haveDPT&&dpt_depth_m<CONTOUR_SAFETY_DEPTH_M){  
+                    gotoLoiterReset(BC_LOITER_WP_RESET_APPROACH);  
+                    sendStatusText_P(MAV_SEVERITY_WARNING,PSTR("CONTOUR: shallow depth -> LOITER (approach)"));  
+                }else if(haveCurrentPos&&activationPosValid){  
+                    float cosLat=activationCosLat;  
+                    float dN=(currentLat_int-approachCenterLat_int)*METERS_PER_INT7_LAT;  
+                    float dE=(currentLon_int-approachCenterLon_int)*METERS_PER_INT7_LAT*cosLat;  
+                    float theta=atan2f(dE,dN)*57.29577951f;  
+                    if(theta<0.0f)theta+=360.0f;  
+                    if(circleApproachThetaInit>=999.0f){    
+                        circleApproachPrevTheta=theta;    
+                        circleApproachAccumAngle=0.0f;    
+                        circleApproachThetaInit=0.0f;    
+                    }else{ 
+                        float dTheta=theta-circleApproachPrevTheta;  
+                        while(dTheta>180.0f)dTheta-=360.0f;  
+                        while(dTheta<-180.0f)dTheta+=360.0f;  
+                        circleApproachAccumAngle+=dTheta;  
+                        circleApproachPrevTheta=theta;  
+                    }  
+                    if(fabsf(circleApproachAccumAngle)>=180.0f){  
+                        circlePrevLat_int=currentLat_int;  
+                        circlePrevLon_int=currentLon_int;  
+                        circleAccumAngle=0.0f;  
+                        circleCrossFound=false;  
+                        circleBestDev=999.0f;  
+                        depthSlopeCount=0;  
+                        depthSlopeHead=0;  
+                        depthSlopeCumDist=0.0f;  
+                        circleLastDepth=haveDPT?dpt_depth_m:contourTargetDepth_m;  
+                        surveyDptWasValid=haveDPT;  
+                        circleApproachThetaInit=999.0f;    
                         contourPhase=ContourPhase::CIRCLE_SURVEY;
-                        EEPROM.update(EEPROM_ADDR_BREADCRUMB,BC_SURVEY_ENTER);
-#if DEBUG_GUIDED || DEBUG_APPROACH || DEBUG_SURVEY
-						sendStatusText_P(MAV_SEVERITY_INFO,PSTR("CONTOUR: survey phase entered"));
-#endif
-                    }else{
-                        // bearing FROM current position TO circle anchor (0-360 deg, 0=North)  
-						float bearingToAnchorDeg=atan2f(-dE,-dN)*57.29577951f;  
-						if(bearingToAnchorDeg<0.0f)bearingToAnchorDeg+=360.0f;  
-						sendVelocityTarget(bearingToAnchorDeg, activeSpeedSlot==1?fishingSpeed:travelSpeed); 
-					}
-					}else{  
-						sendVelocityTarget(contourHeadingDeg,activeSpeedSlot==1?fishingSpeed:travelSpeed);  
-					}
+                        EEPROM.update(EEPROM_ADDR_BREADCRUMB,BC_SURVEY_ENTER);  
+#if DEBUG_GUIDED || DEBUG_APPROACH || DEBUG_SURVEY  
+                        sendStatusText_P(MAV_SEVERITY_INFO,PSTR("CONTOUR: survey phase entered"));  
+#endif  
+                    }else{      
+                        float bearingTangentDeg=theta+90.0f;      
+                        if(bearingTangentDeg<0.0f)bearingTangentDeg+=360.0f;      
+                        if(bearingTangentDeg>=360.0f)bearingTangentDeg-=360.0f;      
+                        sendVelocityTarget(bearingTangentDeg, activeSpeedSlot==1?fishingSpeed:travelSpeed);      
+                    }
+                }else{  
+                    sendVelocityTarget(contourHeadingDeg,activeSpeedSlot==1?fishingSpeed:travelSpeed);  
+                }  
             }
 // === SEC:LOOP_CONTOUR_APPROACH END ===
-// PARITY tag=LOOP_CONTOUR_APPROACH toklen=985 braces={6,6} parens={17,17} semi=13 edges={elseif(c,peed);}}}
+// PARITY tag=LOOP_CONTOUR_APPROACH toklen=1697 braces={8,8} parens={23,23} semi=34 edges={elseif(c,peed);}}}
 // === SEC:LOOP_CONTOUR_SURVEY_A BEGIN ===
             else if(contourPhase==ContourPhase::CIRCLE_SURVEY){
                 if(haveDPT&&dpt_depth_m<CONTOUR_SAFETY_DEPTH_M){
